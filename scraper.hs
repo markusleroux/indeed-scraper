@@ -1,232 +1,209 @@
 #!/usr/bin/env stack
--- stack --resolver lts-17.4 script 
-{-# LANGUAGE OverloadedStrings, DeriveGeneric, DeriveAnyClass #-}
+-- stack --resolver lts-17.4 script
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 import Data.String.Utils
-import Text.HTML.Scalpel
+import Text.HTML.Scalpel hiding (position)
 
-import Control.Monad.Trans.Maybe
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Maybe
 
+import Control.Monad.State
 import Data.Maybe
 import qualified Data.Set as Set
-import Control.Monad.State
 
-import GHC.Generics
-import qualified Data.ByteString.Lazy as L
-import Data.Aeson (encodeFile, ToJSON)
+import Data.Aeson (ToJSON, encodeFile)
 import qualified Data.Aeson.Encode.Pretty as AP
+import qualified Data.ByteString.Lazy as L
+import GHC.Generics
 
+import System.Console.CmdArgs
 
 --------------------------------
+main :: IO ()
+main = writeAllDetails =<< cmdArgs options
 
+data ExperienceLevel
+    = Entry
+    | Mid
+    | Senior
+    deriving (Data, Eq, Typeable)
 
-data Job = Job	{ title :: String
-		, url :: String
-		, company :: String
-		, date :: String
-		, location :: String
-		, qualifications :: Maybe String
-		, description :: Maybe String
-		} deriving (Show, Eq, Generic, ToJSON)
+instance Show ExperienceLevel where
+    show Entry = "entr y_level"
+    show Mid = "mid_   level"
+    show Senior = "senior_level"
+
+data Options =
+    Options
+        { positionArg :: String
+        , locationArg :: String
+        , fileArg :: String
+        , max_pagesArg :: Int
+        , experienceArg :: ExperienceLevel
+        }
+    deriving (Data, Eq, Show, Typeable)
+
+options :: Options
+options =
+    Options
+        { positionArg = def &= argPos 0 &= typ "TITLE"
+        , locationArg = def &= argPos 1 &= typ "LOCATION"
+        , fileArg = "job_results.json"
+              &= typFile &= opt ("results.json" :: String)
+              &= help "The file to write to (default=results.json)"
+              &= explicit
+              &= name "file"
+              &= name "f"
+        , max_pagesArg = 50
+              &= typ "INT"
+              &= help "The maximum number of pages to search (default=50)"
+              &= opt (50 :: Int)
+              &= explicit
+              &= name "max_pages"
+              &= name "m"
+        , experienceArg = Entry
+              &= typ ""
+              &= help "One of [Entry, Mid, Senior] (default=Entry)"
+              &= opt Entry
+              &= explicit
+              &= name "exp"
+              &= name "e"
+        }
+        &= summary "Indeed Scraper, v1.0, Markus Le Roux 2021"
+        &= program "indeed-scraper"
+
+--------------------------------
+data Job =
+    Job
+        { title :: String
+        , url :: String
+        , company :: String
+        , date :: String
+        , location :: String
+        , qualifications :: Maybe String
+        , description :: Maybe String
+        }
+    deriving (Eq, Generic, Show, ToJSON)
 
 -- Set requires an ordering
 instance Ord Job where
-	job1 `compare` job2 = ( title job1 ) `compare` ( title job2 )
+    job1 `compare` job2 = (title job1) `compare` (title job2)
 
 --------------------------------
+-- Get a list of the basic information from a job search page
+allJobs :: Options -> Int -> MaybeT IO [Job]
+allJobs options page = MaybeT $ scrapeURL url jobsScraper
+  where
+    url :: String
+    url = let encode = replace " " "%20" in
+        concat
+            [ "https://www.indeed.com/jobs?"
+            , "q=" ++ (encode $ positionArg options)
+            , "&l=" ++ (encode $ locationArg options)
+            , "&jt=fulltime"
+            , "&explvl=" ++ (show $ experienceArg options)
+            , "&sort=date"
+            , "&start=" ++ (show $ page * 10)
+            ]
+       
+    jobsScraper :: Scraper String [Job]
+    jobsScraper = chroots (TagString "div" @: [hasClass "result"]) jobScraper
 
-
-allJobs :: String -> String -> Int -> MaybeT IO [Job]
-allJobs position location page = MaybeT $ scrapeURL url jobsScraper
-    where 
-	url :: String
-	url = buildURL position location
-
-	buildURL :: String -> String -> String
-	buildURL position location = concat
-		[ "https://www.indeed.com/jobs?"
-		, "q=" ++ (encode position)
-		, "&l=" ++ (encode location)
-		, "&jt=fulltime"
-		, "&explvl=entry_level"
-		, "&sort=date"
-		, "&start=" ++ ( show $ page * 10 )
-		] where encode = replace " " "%20"
-
-	jobsScraper :: Scraper String [Job]
-	jobsScraper = chroots ( TagString "div" @: [ hasClass "result" ] ) jobScraper
-
-	jobScraper :: Scraper String Job
-	jobScraper = do
-		titleListed <- attr "title" $ TagString "a" @: [ hasClass "jobtitle" ]
-		urlListed <- fmap ( "https://www.indeed.com" ++ ) $ attr "href" $ TagString "a" @: [ hasClass "jobtitle" ]
-		companyListed <- fmap (replace "\n" "") $ text $ TagString "a" @: [ AttributeString "data-tn-element" @= "companyName" ]
-		dateListed <- text $ TagString "span" @: [ hasClass "date" ]
-		locationListed <- text $ TagString "span" @: [ hasClass "location" ]
-
-		return $ Job titleListed urlListed companyListed dateListed locationListed Nothing Nothing
+    jobScraper :: Scraper String Job
+    jobScraper = do
+        titleListed <- attr "title" $ TagString "a" @: [hasClass "jobtitle"]
+        urlListed <- fmap ("https://www.indeed.com" ++) $ attr "href" $ TagString "a" @: [hasClass "jobtitle"]
+        companyListed <- fmap (replace "\n" "") $ text $ TagString "a" @: [AttributeString "data-tn-element" @= "companyName"]
+        dateListed <- text $ TagString "span" @: [hasClass "date"]
+        locationListed <- text $ TagString "span" @: [hasClass "location"]
+        return $ Job titleListed urlListed companyListed dateListed locationListed Nothing Nothing
 
 --------------------------------
+data Details =
+    Details String String
 
-data Details = Details String String
-
-
+-- Get details from the details page for a specific job
 getDetails :: String -> MaybeT IO Details
 getDetails url = MaybeT $ scrapeURL url detailsScraper
-    where
-	detailsScraper :: Scraper String Details
-	detailsScraper = do
-		qualsListed <- texts $ TagString "li" @: [ hasClass "jobSearch-ReqAndQualSection-item" ]
-		textListed <- texts $ TagString "div" @: [ hasClass "jobsearch-jobDescriptionText" ]
-		return $ Details ( concat qualsListed ) ( concat textListed )
+  where
+    detailsScraper :: Scraper String Details
+    detailsScraper = do
+        qualsListed <- texts $ TagString "li" @: [hasClass "jobSearch-ReqAndQualSection-item"]
+        textListed <- texts $ TagString "div" @: [hasClass "jobsearch-jobDescriptionText"]
+        return $ Details (concat qualsListed) (concat textListed)
 
+-- Extend all jobs function to include details
+allDetails :: Options -> Int -> MaybeT IO [Job]
+allDetails options page = allJobs options page >>= (mapM writeDetailsMaybe)
+  where
+    writeDetailsMaybe :: Job -> MaybeT IO Job
+    writeDetailsMaybe job = (getDetails (url job) >>= (return . writeDetails job)) `mplus` (return job)
+    
+    writeDetails :: Job -> Details -> Job
+    writeDetails (Job t q c d l qual desc) (Details newQual newDesc) = Job t q c d l (Just newQual) (Just newDesc)
 
-allDetails :: String -> String -> Int -> MaybeT IO [Job]
-allDetails position location page =  allJobs position location page >>= ( mapM writeDetailsMaybe )
-	where
-		writeDetailsMaybe :: Job -> MaybeT IO Job
-		writeDetailsMaybe job = ( getDetails ( url job ) >>= ( return . writeDetails job ) ) `mplus` ( return job )
-
-		writeDetails :: Job -> Details -> Job
-		writeDetails (Job t q c d l qual desc) (Details newQual newDesc) = Job t q c d l (Just newQual) (Just newDesc)
-
-allDetailsAllPages :: String -> String -> [MaybeT IO [Job]]
-allDetailsAllPages position location = map ( allDetails position location ) [0..]
-
---------------------------------
-
-
-hasUniqueJob :: MaybeT IO [Job] -> MaybeT IO ( Set.Set Job ) -> MaybeT IO Bool
-hasUniqueJob = liftM2 $ Set.isSubsetOf . Set.fromList
-
-hasUniqueJob' :: Maybe [Job] -> Maybe ( Set.Set Job ) -> Bool
-hasUniqueJob' =  ( fromMaybe False . ) . liftM2 Set.isSubsetOf . ( liftM Set.fromList )
-
-addToSetM :: MaybeT IO [Job] -> MaybeT IO ( Set.Set Job ) -> MaybeT IO ( Set.Set Job )
-addToSetM = liftM2 $ Set.union . Set.fromList
-
-accumulatePages :: [MaybeT IO [Job]] -> MaybeT IO ( Set.Set Job )
-accumulatePages = foldM addToSetM' Set.empty
-	where
-	addToSetM' :: Set.Set Job -> MaybeT IO [Job] -> MaybeT IO ( Set.Set Job )
-	addToSetM' jobSet = liftM $ Set.union jobSet . Set.fromList
-
-
-scanlM :: Monad m => (a -> b -> m a) -> a -> [b] -> m [a]
-scanlM f q [] = return [q]
-scanlM f q (x:xs) =
-	do
-	q2 <- f q x
-	qs <- scanlM f q2 xs
-	return $ (q:qs)
-
-
-
---------------------------------
--- https://stackoverflow.com/questions/28755554/taking-from-a-list-until-encountering-a-duplicate
-
-
-remember :: [Job] -> StateT ( Set.Set Job ) ( MaybeT IO ) ()
-remember = modify . Set.union . Set.fromList
-
-hasNewJobs :: [Job] -> StateT ( Set.Set Job ) ( MaybeT IO ) Bool
-hasNewJobs newJobs = do
-	jobs <- get
-	return $ Set.fromList newJobs `Set.isSubsetOf` jobs
-
-
-
-remember' :: Set.Set Job -> StateT ( Set.Set Job ) ( MaybeT IO ) ()
-remember' = modify . Set.union
-
-hasNewJobs' :: Set.Set Job -> StateT ( Set.Set Job ) ( MaybeT IO ) Bool
-hasNewJobs' newJobs = get >>= ( return . Set.isSubsetOf newJobs )
-
-writeNewJobs :: [Job] -> StateT ( Set.Set Job ) ( MaybeT IO ) Bool
-writeNewJobs jobs = do
-	hasNew <- hasNewJobs jobs
-	if hasNew then remember jobs else remember []
-	return $ hasNew
-	
-accumulateUntil :: Monad m => ( a -> m Bool ) -> [a] -> m ()
-accumulateUntil _ [] = return ()
-accumulateUntil wp (h:tl) = wp h >>= evaluateB h tl
-	where
-	--evaluateB :: a -> [a] -> Bool -> m [a]
-	evaluateB h tl b = if b then ( accumulateUntil wp tl ) >> return () else return ()
-
---accumulatePages' :: [MaybeT IO [Job]] -> StateT ( Set.Set Job ) ( MaybeT IO ) ()
---accumulatePages' = accumulateUntil writeNewJobs
-
+-- Iterate over all pages in search
+allDetailsAllPages :: Options -> [MaybeT IO [Job]]
+allDetailsAllPages options = map (allDetails options) [0 .. p]
+  where
+    p = max_pagesArg options
 
 --------------------------------
 -- https://mail.haskell.org/pipermail/beginners/2009-January/000690.html
-
-
-accumulatePages' :: [MaybeT IO [Job]] -> MaybeT IO ( Set.Set Job )
-accumulatePages' = ( liftM stopAccum ) . scanlM addToSetM' Set.empty
-	where
-	addToSetM' :: Set.Set Job -> MaybeT IO [Job] -> MaybeT IO ( Set.Set Job )
-	addToSetM' jobSet = liftM $ Set.union jobSet . Set.fromList
-
-	stopAccum :: [ Set.Set a ] -> Set.Set a
-	stopAccum [] = Set.empty
-	stopAccum (x:[]) = x
-	stopAccum (x:xs) = if length ( head xs ) == length x then x else stopAccum xs
-
-
-
---------------------------------
-
-
-writeDetails :: String -> String -> Int -> String -> IO ()
-writeDetails position location page file = do
-	maybeJobs <- runMaybeT $ allDetails position location page
-	case maybeJobs of
-		Just jobs -> writeDetailsHelper jobs
-		Nothing -> return ()
-	where
-		writeDetailsHelper :: [Job] -> IO ()	
-		writeDetailsHelper = mapM_ $ L.appendFile file . AP.encodePretty' config
-
-		config = AP.Config (AP.Spaces 4) mempty AP.Generic True
-
-writeDetails' :: String -> String -> Int -> String -> IO ()
-writeDetails' position location page file = ( runMaybeT $ allDetails position location page ) >>= writeMaybeList
-	where
-		writeMaybeList :: Maybe [Job] -> IO ()
-		writeMaybeList (Just jobs) = mapM_ ( L.appendFile file . AP.encodePretty' config ) jobs
-		writeMaybeList Nothing = return ()
-	
-		writeMaybeSet :: Maybe ( Set.Set Job ) -> IO ()
-		writeMaybeSet ( Just jobs ) = mapM_ ( L.appendFile file . AP.encodePretty' config ) jobs
-		writeMaybeSet Nothing = return ()
-		
-		config = AP.Config (AP.Spaces 4) mempty AP.Generic True
-
-
-writeAllDetails :: String -> String -> Int -> String -> IO ()
-writeAllDetails position location page file = ( runMaybeT $ accumulatePages $ allDetailsAllPages position location ) >>= writeMaybeSet
-	where
-		writeMaybeSet :: Maybe ( Set.Set Job ) -> IO ()
-		writeMaybeSet ( Just jobs ) = mapM_ ( L.appendFile file . AP.encodePretty' config ) jobs
-		writeMaybeSet Nothing = return ()
-		
-		config = AP.Config (AP.Spaces 4) mempty AP.Generic True
-
-
-
-printDetails :: String -> String -> Int -> IO ()
-printDetails position location page = ( runMaybeT $ allDetails position location page ) >>= print
-
+-- Accumulate all pages into a set
+accumulatePages :: [MaybeT IO [Job]] -> MaybeT IO (Set.Set Job)
+accumulatePages = (liftM stopAccum) . scanlM addToSetM' Set.empty
+  where
+    addToSetM' :: Set.Set Job -> MaybeT IO [Job] -> MaybeT IO (Set.Set Job)
+    addToSetM' jobSet = liftM $ Set.union jobSet . Set.fromList
+    
+        -- Indeed does not list the final page
+        -- Stop when new pages don't add new jobs
+    stopAccum :: [Set.Set a] -> Set.Set a
+    stopAccum [] = Set.empty
+    stopAccum (x:[]) = x
+    stopAccum (x:xs) =
+        if length (head xs) == length x
+            then x
+            else stopAccum xs
+                 
+        -- Scanl generalized to monads
+    scanlM :: Monad m => (a -> b -> m a) -> a -> [b] -> m [a]
+    scanlM f q [] = return [q]
+    scanlM f q (x:xs) = do
+        q2 <- f q x
+        qs <- scanlM f q2 xs
+        return $ (q : qs)
 
 --------------------------------
+-- Write details from a specific page to file
+writeDetailsPage :: Options -> Int -> IO ()
+writeDetailsPage options page = (runMaybeT $ allDetails options page) >>= writeMaybeList
+  where
+    writeMaybeList :: Maybe [Job] -> IO ()
+    writeMaybeList (Just jobs) = mapM_ (L.appendFile (fileArg options) . AP.encodePretty' config) jobs
+    writeMaybeList Nothing = return ()
+    
+    config = AP.Config (AP.Spaces 4) mempty AP.Generic True
 
+printDetails :: Options -> Int -> IO ()
+printDetails options page = (runMaybeT $ allDetails options page) >>= print
 
-{-
-main :: IO ()
-main = encodeFile "data.json" $ allDetails "cook" "washington"
--- allDetails "cook" "washington" >>= print
--}
+-- Write details from all pages to file
+writeAllDetails :: Options -> IO ()
+writeAllDetails options = do
+    jobSet <- runMaybeT $ accumulatePages $ allDetailsAllPages options
+    writeMaybeSet jobSet
+  where
+    writeMaybeSet :: Maybe (Set.Set Job) -> IO ()
+    writeMaybeSet (Just jobs) = mapM_ (L.appendFile (fileArg options) . AP.encodePretty' config) jobs
+    writeMaybeSet Nothing = return ()
+    
+    config = AP.Config (AP.Spaces 4) mempty AP.Generic True
+--------------------------------
