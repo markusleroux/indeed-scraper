@@ -1,5 +1,3 @@
-#!/usr/bin/env stack
--- stack --resolver lts-17.4 script
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveGeneric #-}

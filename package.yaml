@@ -1,0 +1,29 @@
+name:                indeed-scraper
+version:             0.1.0.0
+#synopsis:
+#description:
+homepage:            https://github.com/markusleroux/indeed-scraper#readme
+license:             BSD3
+author:              Markus Le Roux
+maintainer:          markusleroux314@gmail.com
+copyright:           GNU GPL
+category:            Web
+extra-source-files:
+- README.md
+
+dependencies:
+  - base >= 4.7 && < 5
+  - mtl
+  - MissingH
+  - transformers
+  - containers
+  - bytestring
+  - scalpel
+  - aeson
+  - aeson-pretty
+  - cmdargs
+
+executables:
+  indeed-scraper:
+    source-dirs:      src
+    main:             Main.hs
