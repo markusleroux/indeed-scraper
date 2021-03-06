@@ -8,14 +8,14 @@ import Data.String.Utils
 import Text.HTML.Scalpel hiding (position)
 
 import Control.Monad
-import Control.Monad.IO.Class
+import Control.Monad.IO.Class()
 import Control.Monad.Trans.Maybe
 
-import Control.Monad.State
-import Data.Maybe
+import Control.Monad.State()
+import Data.Maybe()
 import qualified Data.Set as Set
 
-import Data.Aeson (ToJSON, encodeFile)
+import Data.Aeson (ToJSON)
 import qualified Data.Aeson.Encode.Pretty as AP
 import qualified Data.ByteString.Lazy as L
 import GHC.Generics
@@ -33,8 +33,8 @@ data ExperienceLevel
     deriving (Data, Eq, Typeable)
 
 instance Show ExperienceLevel where
-    show Entry = "entr y_level"
-    show Mid = "mid_   level"
+    show Entry = "entry_level"
+    show Mid = "mid_level"
     show Senior = "senior_level"
 
 data Options =
@@ -43,7 +43,7 @@ data Options =
         , locationArg :: String
         , fileArg :: String
         , max_pagesArg :: Int
-        , experienceArg :: ExperienceLevel
+        , experienceArg :: Maybe ExperienceLevel
         }
     deriving (Data, Eq, Show, Typeable)
 
@@ -65,10 +65,9 @@ options =
               &= explicit
               &= name "max_pages"
               &= name "m"
-        , experienceArg = Entry
+        , experienceArg = def
               &= typ ""
-              &= help "One of [Entry, Mid, Senior] (default=Entry)"
-              &= opt Entry
+              &= help "One of [Entry, Mid, Senior] (Optional)"
               &= explicit
               &= name "exp"
               &= name "e"
@@ -105,11 +104,13 @@ allJobs options page = MaybeT $ scrapeURL url jobsScraper
             , "q=" ++ (encode $ positionArg options)
             , "&l=" ++ (encode $ locationArg options)
             , "&jt=fulltime"
-            , "&explvl=" ++ (show $ experienceArg options)
+            , explvlstring
             , "&sort=date"
             , "&start=" ++ (show $ page * 10)
-            ]
-       
+            ] where explvlstring = case experienceArg options of
+                                     Just experience -> "&explvl=" ++ (show experience)
+                                     Nothing -> ""
+                      
     jobsScraper :: Scraper String [Job]
     jobsScraper = chroots (TagString "div" @: [hasClass "result"]) jobScraper
 
@@ -173,7 +174,7 @@ accumulatePages = (liftM stopAccum) . scanlM addToSetM' Set.empty
                  
         -- Scanl generalized to monads
     scanlM :: Monad m => (a -> b -> m a) -> a -> [b] -> m [a]
-    scanlM f q [] = return [q]
+    scanlM _ q [] = return [q]
     scanlM f q (x:xs) = do
         q2 <- f q x
         qs <- scanlM f q2 xs
